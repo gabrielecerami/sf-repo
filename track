@@ -1,0 +1,24 @@
+scenario 1
+
+
+check upstream
+    ssh rpmfactory gerrit query --format json --all-approvals --all-reviewers --comments --commit-message --current-patch-set --dependencies --submit-records "project:ironic"
+pull chain:
+    query project:$project review
+    identify tp of chain (the on with no neededBy)
+    fetch and checkout ref of current-patchset on top of chain
+test merge
+    cherrypick_recombine
+push review on top
+    git review -y -r gerrit liberty-patches
+
+scenario 2
+
+check upstream 
+pull chain
+test merge fail
+autoresolution ok
+    compare patches.
+mangle chain 
+push new chain (new patch sets will be formed)
+
