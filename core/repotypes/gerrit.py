@@ -1,4 +1,3 @@
-# Performs sanity check for midstream
 import json
 import pprint
 from ..colorlog import log
@@ -92,19 +91,9 @@ class Gerrit(object):
         query_string = '\(%s:%s' % (criteria, ids[0])
         for change in ids[1:]:
             query_string = query_string + " OR %s:%s" % (criteria,change)
-#        uncomment this below and remove the if else block
         query_string = query_string + "\) AND project:%s AND NOT status:abandoned" % (self.project_name)
         if not search_merged:
             query_string = query_string + " AND NOT status:merged"
-#        if self.name == 'original':
-#            query_string = query_string + "\) AND project:openstack/nova AND NOT status:abandoned"
-#        elif criteria == "commit":
-#            query_string = query_string + "\) AND project:nova AND NOT status:abandoned"
-#        elif criteria == "topic":
-#            query_string = query_string + "\) AND project:nova-gitnetics AND NOT status:abandoned"
-#        elif criteria == "change":
-#            query_string = query_string + "\) AND \(project:nova OR project:nova-gitnetics\) AND NOT status:abandoned"
-
 
         if branch:
             query_string = query_string + " AND branch:%s " % branch
@@ -201,27 +190,4 @@ class Gerrit(object):
             return None
 
         return change
-
-    def get_untested_recombs_infos(self, recomb_id=None, branch=''):
-        if recomb_id:
-            change_query = 'AND change:%s' % recomb_id
-        else:
-            change_query = ''
-        query = "'owner:self AND project:%s %s AND branch:^recomb-.*-%s.* AND ( NOT label:Code-Review+2 AND NOT label:Verified+1 AND status:open)'"  % (self.project_name, change_query, branch)
-#        query = "'owner:self AND project:nova-gitnetics %s AND branch:^recomb-.*-%s.* AND ( NOT label:Code-Review+2 AND NOT label:Verified+1 AND NOT status:abandoned)'"  % (change_query, branch)
-        untested_recombs = self.query_changes_json(query)
-        log.debugvar('untested_recombs')
-        return untested_recombs
-
-    def get_approved_change_infos(self, branch):
-        infos = dict()
-#        query_string = "'owner:self AND project:%s AND branch:^%s AND label:Code-Review+2 AND label:Verified+1 AND NOT status:abandoned'" % (self.project_name, branch)
-#        query_string = "'owner:self AND project:nova AND branch:^%s AND label:Code-Review+2 AND label:Verified+1 AND NOT status:abandoned'" (branch)
-        changes_infos = self.query_changes_json(query_string)
-
-        for gerrit_infos in changes_infos:
-            norm_infos = self.normalize_infos(gerrit_infos)
-            infos[norm_infos['number']] = norm_infos
-
-        return infos
 

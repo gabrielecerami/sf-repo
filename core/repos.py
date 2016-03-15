@@ -5,7 +5,7 @@ from project import Project
 import sys
 
 
-class Repowatch(object):
+class Repos(object):
 
     def __init__(self, projects_conf, base_dir, filter_projects=None, filter_method=None, filter_branches=None, fetch=True):
         self.projects = dict()
@@ -60,23 +60,15 @@ class Repowatch(object):
 
         logsummary.info("initializing and updating local repositories for relevant projects")
 
-        for project_name in projects:
-            try:
-                self.projects[project_name] = Project(project_name, projects[project_name], self.base_dir + "/"+ project_name, fetch=fetch)
-                logsummary.info("Project: %s initialized" % project_name)
-            except Exception, e:
-                traceback.print_exc(file=sys.stdout)
-                log.error(e)
-                logsummary.error("Project %s skipped, reason: %s" % (project_name, e))
-
-    def poll_original(self):
-        logsummary.info('Polling original for new changes. Checking status of all changes.')
+    def poll(self):
         for project_name in self.projects:
             try:
-                logsummary.info('Polling project: %s' % project_name)
-                project = self.projects[project_name]
+                logsummary.info('Polling original for new changes. Checking status of all changes.')
+                project = Project(project_name, self.projects[project_name], self.base_dir + "/"+ project_name, fetch=fetch)
+                logsummary.info("Project: %s initialized" % project_name)
                 project.poll_original_branches()
             except Exception, e:
                 traceback.print_exc(file=sys.stdout)
                 log.error(e)
                 logsummary.error("Project %s skipped, reason: %s" % (project_name, e))
+

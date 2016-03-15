@@ -134,29 +134,6 @@ class Underlayer(Git):
         if cmd.returncode != 0:
             shell('git checkout --orphan parking')
             shell('git commit --allow-empty -a -m "parking"')
-        self.branch_maps = dict()
-        self.branch_maps['original->replica'] = dict()
-        self.branch_maps['patches->replica'] = dict()
-        self.branch_maps['target->replica'] = dict()
-        self.branch_maps['original->target'] = dict()
-        self.branch_maps['patches->target'] = dict()
-        self.branch_maps['replica->target'] = dict()
-        self.branch_maps['original->patches'] = dict()
-        self.branch_maps['replica->patches'] = dict()
-        self.branch_maps['target->patches'] = dict()
-
-    def set_branch_maps(self, original_branch, replica_branch, target_branch, patches_branch):
-        self.branch_maps['original->replica'][original_branch] = replica_branch
-        self.branch_maps['patches->replica'][patches_branch] = replica_branch
-        self.branch_maps['target->replica'][target_branch] = replica_branch
-
-        self.branch_maps['original->target'][original_branch] = target_branch
-        self.branch_maps['replica->target'][replica_branch] = target_branch
-        self.branch_maps['patches->target'][patches_branch] = target_branch
-
-        self.branch_maps['original->patches'][original_branch] = patches_branch
-        self.branch_maps['replica->patches'][replica_branch] = patches_branch
-        self.branch_maps['target->patches'][target_branch] = patches_branch
 
 
     def set_original(self, repo_type, location, project_name, fetch=True):
@@ -175,10 +152,6 @@ class Underlayer(Git):
         self.replica_remote = self.remotes['replica']
         self.recomb_remote = self.remotes['replica']
         self.patches_remote = self.remotes['replica']
-
-    def set_replica_mirror(self, location, name):
-        self.add_git_remote('replica-mirror', project_info['replica']['mirror'], self.replica_project['name'], fetch=False)
-        self.mirror_remote = self.remote['replica-mirror']
 
     def delete_service_branches(self):
         if self.mirror_remote:
@@ -211,26 +184,6 @@ class Underlayer(Git):
         conflicts_string = conflicts_string + '\n  '.join([x[3:] for x in conflicts])
         conflicts_string = conflicts_string + "\n\n"
         return re.sub('(Change-Id: .*\n)', '%s\g<1>' % (conflicts_string),commit_message)
-
-    def format_patch(self, recombination):
-        shell('git fetch replica +refs/changes/*:refs/remotes/replica/changes/*')
-        cmd = shell('git checkout remotes/replica/changes/%s/%s/%s' % (recombination.number[-2:], recombination.number, recombination.patchset_number))
-        cmd = shell('git show --pretty=format:"" HEAD  --patch-with-stat')
-        diff = '\n'.join(cmd.output)
-        if not diff:
-            raise Error
-        #diff = 'diff --git a/test-requirements.txt b/test-requirements.txt\nindex 509587b..829b6d6 100644\n--- a/test-requirements.txt\n+++ b/test-requirements.txt\n@@ -1,3 +1,4 @@\n+# ifjoweijf\n # The order of packages is significant, because pip processes them in the order\n # of appearance. Changing the order has an impact on the overall integration\n # process, which may cause wedges in the gate later.\n'
-        cmd = shell('git format-patch %s^..%s --stdout' % (recombination.main_source.revision, recombination.main_source.revision))
-        patch = '\n'.join(cmd.output)
-        rs = re.search("Subject: \[PATCH\] ", patch)
-        mpatch = patch[:rs.end()]
-        cmd = shell('git --version | sed -e "s/git version //"')
-        gitver = cmd.output[0]
-        ampatch = mpatch + recombination.backport_change.commit_message + "\n---\n" + diff + "\n--\n%s\n" % gitver
-        log.debugvar('ampatch')
-        cmd = shell('git checkout -B %s remotes/replica/%s' % (recombination.backport_change.branch, recombination.backport_change.branch))
-        cmd = shell('git am --abort')
-        cmd = shell('git am', stdin=ampatch)
 
     def cherrypick_recombine(self, recombination, permanent_patches=None):
         #shell('git fetch replica')
@@ -296,33 +249,6 @@ class Underlayer(Git):
             recombination.status = "SUCCESSFUL"
             self.commit_recomb(recombination)
 
-    def commit_recomb(self, recombination):
-        pick_revision = recombination.main_source.revision
-        merge_revision = recombination.patches_source.revision
-        main_source_name = recombination.main_source_name
-        patches_source_name = recombination.patches_source_name
-        main_branch = recombination.main_source.branch
-
-        fd, commit_message_filename = tempfile.mkstemp(prefix="recomb-", suffix=".yaml", text=True)
-        os.close(fd)
-        commit_data = recombination.get_commit_message_data()
-        with open(commit_message_filename, 'w') as commit_message_file:
-            # We have to be sure this is the first line in yaml document
-            commit_message_file.write("Recombination: %s:%s-%s:%s~%s\n\n" % (main_source_name, pick_revision[:6], patches_source_name, merge_revision[:6], main_branch))
-            yaml.dump(commit_data, commit_message_file, default_flow_style=False, indent=4, canonical=False, default_style=False)
-
-        cmd = shell("git commit -F %s" % (commit_message_filename))
-        # If two changes with the exact content are merged upstream
-        # the above command will succeed but nothing will be committed.
-        # and recombination upload will fail due to no change.
-        # this assures that we will always commit something to upload
-        for line in cmd.output:
-            if 'nothing to commit' in line or 'nothing added' in line:
-                shell("git commit --allow-empty -F %s" % (commit_message_filename))
-                #logsummary.warning('Contents in commit %s have been merged twice in upstream' % pick_revision)
-                break
-        os.unlink(commit_message_filename)
-
     def remove_commits(self, branch, removed_commits, remote=''):
         shell('git branch --track %s%s %s' (remote, branch, branch))
         shell('git checkout %s' % branch)
@@ -337,50 +263,6 @@ class Underlayer(Git):
             shell('git push -f %s HEAD:%s' % (remote, branch))
             log.info('Pushed modified branch on remote')
         shell('git checkout parking')
-
-    def sync_replica(self, replica_branch, revision):
-        os.chdir(self.directory)
-        shell('git fetch replica')
-        shell('git branch --track replica-%s remotes/replica/%s' % (replica_branch, replica_branch))
-        shell('git checkout replica-%s' % replica_branch)
-        cmd = shell('git merge --ff-only %s' % revision)
-        if cmd.returncode != 0:
-            log.debug(cmd.output)
-            log.critical("Error merging. Exiting")
-            raise MergeError
-        cmd = shell('git push replica HEAD:%s' % replica_branch)
-        if cmd.returncode != 0:
-            log.debug(cmd.output)
-            log.critical("Error pushing the merge. Exiting")
-            raise PushError
-        shell('git checkout parking')
-        shell('git branch -D replica-%s' % replica_branch)
-
-    def update_target_branch(self, target_replacement_branch, target_branch):
-        shell('git fetch replica')
-        shell('git checkout remotes/replica/%s' % (target_replacement_branch))
-        shell('git push -f replica HEAD:%s' % (target_branch))
-        shell('git checkout parking')
-        shell('git push replica :%s ' % target_replacement_branch)
-
-    def fetch_recombinations(self, test_basedir, status, recomb_id=None):
-        untested_recombs = self.recomb_remote.get_untested_recombs_infos(recomb_id=recomb_id)
-        dirlist = dict()
-        os.chdir(self.directory)
-        change_dir = os.getcwd()
-        shell('git checkout parking')
-        for recomb in untested_recombs:
-            recomb_dir = "%s/%s/code" % (self.project_name, recomb['number'])
-            recomb_branch = 'remotes/%s/changes/%s/%s/%s' % (self.recomb_remote.name, recomb['number'][-2:], recomb['number'], recomb['currentPatchSet']['number'])
-            shell('git checkout %s' % recomb_branch)
-            shutil.rmtree(test_basedir + "/" + recomb_dir, ignore_errors=True)
-            shutil.copytree(change_dir, test_basedir + "/" + recomb_dir, ignore=shutil.ignore_patterns('.git*'))
-            shell('git checkout parking')
-            dirlist[recomb['number']] = recomb_dir
-        return dirlist
-
-    def get_patches_changes(self, patches_branch):
-        return self.patches_remote.get_changes(patches_branch, search_field='branch', branch=patches_branch, search_merged=False)
 
     def get_original_ids(self, commits):
         ids = OrderedDict()
@@ -412,69 +294,7 @@ class Underlayer(Git):
 
         return recombination
 
-    def get_recombination_from_patches(self, patches_branch):
-        recombination = ReplicaMutationRecombination(self, self.recomb_remote)
-        mutation_changes = self.get_patches_changes(patches_branch)
-        # Pick up only the first in the list
-        if mutation_changes:
-            mutation_change_id, mutation_change = mutation_changes.popitem(last=False)
-            recomb_data = self.recomb_remote.get_change_data(mutation_change_id, search_field='topic', results_key='topic')
-            if recomb_data:
-                # Load existing
-                recombination.load_change_data(recomb_data, replica_remote=self.replica_remote, mutation_change=mutation_change)
-            else:
-                patches_branch = mutation_change.branch
-                change = Change(remote=self.replica_remote)
-                change.branch = self.branch_maps['patches->replica'][patches_branch]
-                change.revision = self.get_revision("remotes/replica/%s" % change.branch)
-                change.parent = self.get_revision("remotes/replica/%s~1" % change.branch)
-                change.uuid = change.revision
 
-                recombination.initialize(self.recomb_remote, replica_change=change, mutation_change=mutation_change)
-                recombination.topic = mutation_change_id
-
-            return recombination, mutation_changes
-        return None, None
-
-    def get_scaninfo_by_recomb_id(self, recomb_id):
-        recomb = Recombination(self, self.recomb_remote)
-        data = self.recomb_remote.get_change_data(recomb_id)
-        metadata = recomb.load_change_data(data)
-        recomb_type = metadata['recomb-type']
-        branch = metadata['sources']['main']['branch']
-
-        return recomb_type, branch
-
-    def get_backport_change():
-        pass
-
-    def get_recombinations_from_original(self, original_branch, original_ids, diversity_refname, replication_strategy, replica_lock):
-        patches_branch = self.branch_maps['original->patches'][original_branch]
-        diversity_revision = self.get_revision(diversity_refname)
-        diversity_change = self.patches_remote.local_track.get_change(diversity_revision, branch=patches_branch)
-        recombinations = OrderedDict()
-        original_changes = self.original_remote.get_changes(list(original_ids), branch=original_branch)
-        recomb_data = self.recomb_remote.get_changes_data(list(original_ids), search_field='topic', results_key='topic')
-
-
-        log.debugvar('original_changes')
-        for change_id in original_ids:
-            if replication_strategy == "lock-and-backports":
-                recomb_class = EvolutionDiversityRecombination
-            elif replication_strategy == "change-by-change":
-                recomb_class = OriginalDiversityRecombination
-
-            new_recomb = True
-            if change_id in recomb_data:
-                try:
-                    recombination = recomb_class(self, self.recomb_remote)
-                    recombination.load_change_data(recomb_data[change_id], original_remote=self.original_remote, patches_remote=self.patches_remote, diversity_change=diversity_change)
-                    new_recomb = False
-                except RecombinationCanceledError:
-                    del(recombination)
-
-            if new_recomb:
-                recombination = recomb_class(self, self.recomb_remote)
                 # Set real commit as revision
                 original_changes[change_id].revision = original_ids[change_id]
                 if replication_strategy == "lock-and-backports":
@@ -496,27 +316,6 @@ class Underlayer(Git):
                     recombination.initialize(self.recomb_remote, evolution_change=original_changes[change_id], diversity_change=diversity_change, backport_change=backport_change)
                 elif replication_strategy == "change-by-change":
                     recombination.initialize(self.recomb_remote, original_change=original_changes[change_id], diversity_change=diversity_change)
-
-            recombinations[change_id] = recombination
-
-            log.debugvar('change_id')
-            recomb = recombinations[change_id].__dict__
-            log.debugvar('recomb')
-
-        return recombinations
-
-    def get_recombination_in_patches_branch(self, replica_branch):
-        recombinations = list()
-        branch_patches = 'recomb-patches-%s.*' % replica_branch
-        infos = self.replica_remote.get_approved_change_infos(branch_patches)
-        for change_number in infos:
-            recombination = Recombination(self, remote=self.recomb_remote, patches_remote=self.patches_remote, infos=infos[change_number])
-            recombination.load_data(infos)
-            recombinations.append(recombination)
-        return recombinations
-
-    def get_recombination(self, recomb_id):
-        return self.recomb_remote.get_change(recomb_id)
 
 
 class TrackedRepo(Git):
