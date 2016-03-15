@@ -1,0 +1,17 @@
+---
+defaults:
+    replica-location: rpmfactory
+projects:
+    ironic:
+        original:
+            location: gerrit-openstack-rdoci
+            name: openstack/ironic
+            type: gerrit
+            watch-branches:
+                - name: stable/kilo
+                  last-tag: 5.0.0
+                  replica-branch:
+            watch-method: events
+        replica:
+            location: rpmfactory
+            name: ironic

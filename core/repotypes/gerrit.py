@@ -141,7 +141,8 @@ class Gerrit(object):
         if type(search_values) is str or type(search_values) is unicode:
             search_values = [search_values]
 
-        query_string = self.get_query_string(search_field, search_values, branch=branch, search_merged=search_merged)
+        #query_string = self.get_query_string(search_field, search_values, branch=branch, search_merged=search_merged)
+        query_string = "project:%s AND status:open" % self.project_name
         changes_data = self.query_changes_json(query_string)
 
         changes_data.sort(key=lambda data: data[sort_key])

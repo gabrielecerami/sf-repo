@@ -4,8 +4,7 @@ import re
 import argparse
 import os
 from core.colorlog import log,logsummary
-from core.polymerase import Polymerase
-import xml.etree.ElementTree as ET
+from core.repos import Repos
 
 
 def projectname(project_name):
@@ -27,13 +26,12 @@ def parse_args(parser):
 
     subparsers = parser.add_subparsers(dest='command')
 
-    parser_new_original_change = subparsers.add_parser('poll-original')
+    parser_new_original_change = subparsers.add_parser('poll')
     parser_new_original_change.add_argument('-b', '--original-branch', dest='original_branch', action='store',  help='upstream branch to consider')
 
     args = parser.parse_args()
 
     return args
-
 
 
 if __name__=="__main__":
@@ -44,13 +42,13 @@ if __name__=="__main__":
 
     projects = yaml.load(args.projects_path.read())
     try:
-        gitnetic = Polymerase(projects, args.base_dir, filter_projects=args.projects, filter_method=args.watch_method, filter_branches=args.watch_branches, fetch=args.fetch)
+        repos = Repos(projects, args.base_dir, filter_projects=args.projects, filter_method=args.watch_method, filter_branches=args.watch_branches, fetch=args.fetch)
     except ValueError:
         log.critical('No projects to handle')
         sys.exit(1)
 
     ## actions
 
-    if args.command == 'poll-original':
-        gitnetic.poll_original()
+    if args.command == 'poll':
+        repos.poll()
 

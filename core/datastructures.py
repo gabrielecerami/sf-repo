@@ -147,6 +147,8 @@ class Change(object):
 
 class Backport(object):
 
+
+    def __init__(self):
         self.branch = "recomb-evolution-%s-%s" % (self.evolution_change.branch, self.evolution_change.revision)
         self.topic = self.evolution_change.uuid
         self.set_status()
