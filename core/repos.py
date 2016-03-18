@@ -61,11 +61,6 @@ class Repos(object):
 
 class Project(object):
 
-    status_impact = {
-        "UPLOADED": 1,
-        "MISSING": 0
-    }
-
     def __init__(self, project_name, project_info, local_dir, fetch=True):
         self.project_name = project_name
         self.commits = dict()
@@ -90,26 +85,67 @@ class Project(object):
 
         for branch in project_info['original']['watch-branches']:
             self.branches[branch['name']] = branch
-            if 'replica-name' in branch:
-                self.branches[branch['name']]['replica-branch'] = branch['replica-name']
-            else:
+            if 'replica-branch' not in branch:
                 self.branches[branch['name']]['replica-branch'] = branch['name']
 
     def get_new_changes(self, original_branch):
         # change OrderedDict
-        original_changes = self.localrepo.get_commits(self.branches[original_branch]['last-tag'], 'remotes/original/' + original_branch)
-        log.debugvar('original_changes')
-        replica_changes = self.fetch_changes_chain(self.branches[original_branch]['replica-branch'])
-        new_changes = original_changes - replica_changes
-        for change in new_changes:
-            test_change
-
-    def fetch_changes_chain(self,branch):
-        active_changes = self.localrepo.replica_remote.get_active_changes(replica_branch)
-        for change in active_changes:
-            if 'neededBy' not in change:
-                top_of_chain = change
+        replica_branch = self.branches[original_branch]['replica-branch']
+        original_changes = self.localrepo.get_commits('remotes/replica/' + original_branch, 'remotes/original/' + original_branch)
+        if not original_changes:
+            # nothing to do
+            return True
+        blocked_changes = self.localrepo.replica_remote.get_blocked_changes()
+        if blocked_changes:
+            print "there are blocked changes that must be solved before continuing"
+            return False
+        active_changes = self.localrepo.replica_remote.get_changes_data(branch=replica_branch)
+        top_of_chain = None
+        cherrypickfailed = False
+        for uuid, replica_change in active_changes.iteritems():
+            if 'neededBy' not in replica_change:
+                top_of_chain = replica_change
+                active_chain_branch = "replica/changes/%s/%s/%s" % (top_of_chain['number'][-2:], top_of_chain['number'], top_of_chain['patchset_number'])
                 break
+        for new_change in original_changes:
+            replica_change = self.localrepo.find_equivalent_commit(new_change['hash'], active_chain_branch)
+            if not replica_change:
+                # simple case, original change is not present in replica chain
+                # put new change on top.
+                try:
+                    self.localrepo.cherrypick(new_change)
+                except CherryPickfailed:
+                    break
+                self.localrepo.replica_remote.upload()
+            else:
+                suggested_solution = "Commit %s from upstream was already cherry-picked as %s in %s patches branch" % (pick_revision, cmd.output[0], patches_branch)
+                if replica_change is not top_of_chain:
+                # the change is already on the chain, so either is a previously
+                # backported change, or the replica was not updated.
+                # If it's the same change we skip it, if it's different, we recreate it
+                # but we have to respect the order. HOW ?
+                # if the now chanee it's not on top of the chain
+                # it must become the top of the chain
+                    self.localrepo.remove_commits(active_chain_branch [replica_change])
+                    try:
+                        self.localrepo.cherrypick(new_change)
+                    except CherryPickfailed:
+                        break
+                    self.localrepo.replica_remote.upload()
+                else:
+                    diff = self.localrepo.check_diffs(replica_change, new_change)
+                    if diff:
+                        try:
+                            self.localrepo.cherrypick(new_change)
+                        except CherryPickfailed:
+                            break
+                        self.localrepo.replica_remote.upload()
+
+        if cherrypickfailed:
+            comment = failure
+            change_number = self.localrepo.replica_remote.upload("failed_attempts/" % (failed_branch))
+            self.localrepo.replica_remote.comment(change_number, comment)
+
 
     def poll_branches(self):
         for branch in self.branches:

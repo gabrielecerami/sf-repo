@@ -16,7 +16,7 @@ class Gerrit(object):
 
     def query_changes_json(self, query, comments=False):
         changes_infos = list()
-        cmd = shell('ssh %s gerrit query --comments --current-patch-set --format json %s' % (self.host,query))
+        cmd = shell('ssh %s gerrit query --comments --current-patch-set --format json --dependencies --submit-records %s' % (self.host,query))
         log.debug(pprint.pformat(cmd.output))
         for change_json in cmd.output:
             if change_json !='':
@@ -74,6 +74,9 @@ class Gerrit(object):
         infos = self.normalize_infos(gerrit_infos)
         return infos
 
+    def get_blocked_changes(self):
+        return None
+
     def comment_change(self, number, patchset, comment_message, verified=None, code_review=None):
         review_input = dict()
         review_input['labels'] = dict()
@@ -119,6 +122,8 @@ class Gerrit(object):
         if 'comments' in gerrit_infos:
             infos['comments'] = gerrit_infos['comments']
         infos['commit-message'] = gerrit_infos['commitMessage']
+        if 'neededBy' in gerrit_infos:
+            infos['neededBy'] = gerrit_infos['neededBy']
 
         infos['approvals'] = dict()
         if 'approvals' in gerrit_infos['currentPatchSet']:
@@ -137,12 +142,12 @@ class Gerrit(object):
 
         return infos
 
-    def get_changes_data(self, search_values, search_field='change', results_key='id', branch=None, sort_key='number', search_merged=True):
-        if type(search_values) is str or type(search_values) is unicode:
-            search_values = [search_values]
+    #1def get_changes_data(self, search_values, search_field='change', results_key='id', branch=None, sort_key='number', search_merged=True):
+    def get_changes_data(self, results_key='id', branch=None, sort_key='number', search_merged=True):
 
         #query_string = self.get_query_string(search_field, search_values, branch=branch, search_merged=search_merged)
-        query_string = "project:%s AND status:open" % self.project_name
+        query_string = "project:%s AND branch:%s AND status:open" % (self.project_name, branch)
+        #query_string = "project:%s AND branch:master AND status:open" % (self.project_name)
         changes_data = self.query_changes_json(query_string)
 
         changes_data.sort(key=lambda data: data[sort_key])
@@ -152,12 +157,6 @@ class Gerrit(object):
             norm_data = self.normalize_infos(gerrit_data)
             data[norm_data[results_key]] = norm_data
 
-        # fallback to local tracked repo
-        if not data and search_field == 'change' and branch is not None:
-            try:
-                data = self.local_track.get_changes_data(search_values, branch=branch)
-            except AttributeError:
-                pass
 
         return data
 

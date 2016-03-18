@@ -113,10 +113,6 @@ class Git(object):
 
         return commit_list
 
-    def revision_exists(self, remote, revision, branch):
-        cmd = shell("git ")
-        return True
-
 class LocalRepo(Git):
 
     def __init__(self, project_name, directory):
@@ -134,7 +130,6 @@ class LocalRepo(Git):
         if cmd.returncode != 0:
             shell('git checkout --orphan parking')
             shell('git commit --allow-empty -a -m "parking"')
-
 
     def set_original(self, repo_type, location, project_name, fetch=True):
         self.original_type = repo_type
@@ -154,30 +149,20 @@ class LocalRepo(Git):
         self.patches_remote = self.remotes['replica']
 
     def delete_service_branches(self):
-        if self.mirror_remote:
-            log.info("Deleting recomb branches from mirror for project %s" % self.project_name)
-            service_branches = self.list_branches('replica-mirror', pattern='recomb*')
-            self.delete_remote_branches('replica-mirror', service_branches)
-            service_branches = self.list_branches('replica-mirror', pattern='target-*')
-            self.delete_remote_branches('replica-mirror', service_branches)
-        else:
-            log.info("No mirror repository specified for the project")
+        log.info("Deleting recomb branches from mirror for project %s" % self.project_name)
+        service_branches = self.list_branches('replica', pattern='failed-cherrypicks/*')
+        self.delete_remote_branches('replica', service_branches)
 
-    def suggest_conflict_solution(self, recombination):
-        patches_branch = recombination.patches_source.branch
-        pick_revision = recombination.main_source.revision
-
-        suggested_solution = None
-        log.info("Trying to find a possible cause")
-        cmd = shell('git show -s --pretty=format:"%%an <%%ae>" %s' % pick_revision)
+    def find_equivalent_commit(self, revision, branch):
+        cmd = shell('git show -s --pretty=format:"%%an <%%ae>" %s' % revision)
         author = cmd.output[0]
-        cmd = shell('git show -s --pretty=format:"%%at" %s' % pick_revision)
+        cmd = shell('git show -s --pretty=format:"%%at" %s' % revision)
         date = cmd.output[0]
-        cmd = shell('git log --pretty=raw --author="%s" | grep -B 3 "%s" | grep commit\  | sed -e "s/commit //g"' % (author, date))
+        cmd = shell('git log --pretty=raw --author="%s" %s| grep -B 3 "%s" | grep commit\  | sed -e "s/commit //g"' % (author, branch, date))
         if cmd.output:
-            suggested_solution = "Commit %s from upstream was already cherry-picked as %s in %s patches branch" % (pick_revision, cmd.output[0], patches_branch)
-
-        return suggested_solution
+            return cmd.output
+        else:
+            return None
 
     def add_conflicts_string(self, conflicts, commit_message):
         conflicts_string = "\nConflicts:\n  "
@@ -185,34 +170,27 @@ class LocalRepo(Git):
         conflicts_string = conflicts_string + "\n\n"
         return re.sub('(Change-Id: .*\n)', '%s\g<1>' % (conflicts_string),commit_message)
 
-    def cherrypick_recombine(self, recombination, permanent_patches=None):
-        #shell('git fetch replica')
-        #shell('git fetch original')
+    def cherrypick(self, base_revision, pick_revision, permanent_patches=None):
 
-        pick_revision = recombination.main_source.revision
-        merge_revision = recombination.patches_source.revision
-
-        cmd = shell('git branch --list %s' % recombination.branch)
+        branch = "cherrypick-%s-%s" % (base_revision, pick_revision)
+        cmd = shell('git branch --list %s' % branch)
         if cmd.output:
-            cmd = shell('git branch -D %s' % recombination.branch)
+            cmd = shell('git branch -D %s' % branch)
 
-        cmd = shell('git branch -r --list replica/%s' % recombination.branch)
+        cmd = shell('git branch -r --list replica/%s' % branch)
         if cmd.output:
-            cmd = shell('git push replica :%s' % recombination.branch)
+            cmd = shell('git push replica :%s' % branch)
 
-        cmd = shell('git checkout -b %s %s' % (recombination.branch, merge_revision))
+        cmd = shell('git checkout -b %s %s' % (branch, base_revision))
 
         log.info("Creating remote disposable branch on replica")
-        cmd = shell('git push replica HEAD:%s' % recombination.branch)
+        cmd = shell('git push replica HEAD:%s' % branch)
 
         cmd = shell('git cherry-pick --no-commit %s' % (pick_revision))
-        # if merge fails, push empty change, and comment with git status.
-        # TO FIND existing commit in patches (conflict resolution suggestions)
-        # for commit in $(git rev-list --reverse --max-count 1000 --no-merges remotes/original/master); do AUTHOR=$(git show -s --pretty=format:"%an <%ae>" $commit); DATE=$(git show -s --pretty=format:"%at" $commit); CORRES=$(git log --pretty=raw --author="$AUTHOR" | grep -B 3 "$DATE" | grep commit\  | sed -e "s/commit //g"); if [ ! -z $CORRES ] ; then echo $commit in original/master is present in patches as $CORRES; fi; done
+
         if cmd.returncode != 0:
-        #if cmd.returncode == 0:
             failure_cause = None
-            log.error("Recombination Failed")
+            log.error("Cherry Pick Failed")
             cmd = shell('git status --porcelain')
             status = ''
             suggested_solution = ''
@@ -240,14 +218,8 @@ class LocalRepo(Git):
                             block_end = line
                     block = '\n'.join(filecontent.split('\n')[block_start:block_end])
                 diffs[filename] = block
-                suggested_solution = self.suggest_conflict_solution(recombination)
             cmd = shell('git cherry-pick --abort')
-            recombination.status = "FAILED"
-            self.commit_recomb(recombination)
-            raise RecombinationFailed(status, suggested_solution)
-        else:
-            recombination.status = "SUCCESSFUL"
-            self.commit_recomb(recombination)
+            raise CherryPickFailed(status, diffs)
 
     def remove_commits(self, branch, removed_commits, remote=''):
         shell('git branch --track %s%s %s' (remote, branch, branch))
@@ -264,37 +236,8 @@ class LocalRepo(Git):
             log.info('Pushed modified branch on remote')
         shell('git checkout parking')
 
-    def get_original_ids(self, commits):
-        ids = OrderedDict()
-        for commit in commits:
-            if self.original_type == 'gerrit':
-                main_revision = commit['hash']
-                # in gerrit, merge commits do not have Change-id
-                # if commit is a merge commit, search the second parent for a Change-id
-                if len(commit['parents']) != 1:
-                    commit = commit['subcommits'][0]
-                found = False
-                for line in commit['body']:
-                    # if more than one Change-Id line is found, use only the last
-                    if re.search('Change-Id: ', line):
-                        change_id = re.sub(r'\s*Change-Id: ', '', line)
-                        found = True
-                if found:
-                    ids[change_id] = main_revision
-                else:
-                    log.warning("no Change-id found in commit %s or its ancestors" % main_revision)
 
-            elif self.original_type == 'git':
-                ids[commit['hash']] = commit['hash']
-
-        return ids
-
-        mutation_change = self.patches_remote.get_changes_by_id([patches_change_id])[patches_change_id]
-        patches_branch = mutation_change.branch
-
-        return recombination
-
-
+    def something(self):
         # Set real commit as revision
         original_changes[change_id].revision = original_ids[change_id]
         if replication_strategy == "lock-and-backports":

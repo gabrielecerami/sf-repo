@@ -1,7 +1,6 @@
 import yaml
 import re
 from colorlog import log
-from utils import *
 from exceptions import *
 
 yaml.add_representer(folded_unicode, folded_unicode_representer)
