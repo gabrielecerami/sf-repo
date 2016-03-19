@@ -8,11 +8,12 @@ from collections import OrderedDict
 
 class Gerrit(object):
 
-    def __init__(self, name, host, project_name):
+    def __init__(self, localrepo, name, host, project_name):
         self.host = host
         self.name = name
         self.project_name = project_name
         self.url = "ssh://%s/%s" % (host, project_name)
+        self.localrepo = localrepo
 
     def query_changes_json(self, query, comments=False):
         changes_infos = list()
@@ -47,8 +48,8 @@ class Gerrit(object):
     def abandon_change(self, number, patchset):
         shell('ssh %s gerrit review --abandon --project %s %s,%s' % (self.host, self.project_name, number, patchset))
 
-    def upload_change(self, branch, topic, reviewers=None, successremove=True):
-        command = 'git push %s HEAD:refs/drafts/%s/%s' % (self.name, branch, topic)
+    def upload_change(self, source_branch, target_branch, topic, reviewers=None):
+        command = 'git push %s %s:refs/drafts/%s/%s' % (self.name, source_branch, target_branch, topic)
         if reviewers:
             command = "%s%%" % command
             for reviewer in reviewers:
@@ -56,25 +57,24 @@ class Gerrit(object):
             command.rstrip(',')
 
         # FIXME: check upload results in another way
-        shell('git checkout %s' % branch)
         #cmd = shell('git review -D -r %s -t "%s" %s' % (self.name, topic, branch))
         #for line in cmd.output:
         #    if 'Nothing to do' in line:
         #        log.debug("trying alternative upload method")
         #        shell("git push %s HEAD:refs/drafts/%s/%s" % (self.name, branch, topic))
         #        break
-        shell(command)
+        #shell(command)
+        log.debug(command)
+        cmd = shell('git branch -D %s' % source_branch)
         cmd = shell('ssh %s gerrit query --current-patch-set --format json "topic:%s AND status:open"' % (self.host, topic))
-        shell('git checkout parking')
-        log.debug(pprint.pformat(cmd.output))
-        if not cmd.output[:-1] and successremove:
-            shell('git push replica :%s' % branch)
+        if not cmd.output[:-1]:
             return None
         gerrit_infos = json.loads(cmd.output[:-1][0])
         infos = self.normalize_infos(gerrit_infos)
         return infos
 
     def get_blocked_changes(self):
+        #self.get_changes(branch="^failed_attempts/.*")
         return None
 
     def comment_change(self, number, patchset, comment_message, verified=None, code_review=None):
@@ -104,32 +104,22 @@ class Gerrit(object):
         return query_string
 
     def normalize_infos(self, gerrit_infos):
-        infos = {}
-        infos['revision'] = gerrit_infos['currentPatchSet']['revision']
-        infos['parent'] = gerrit_infos['currentPatchSet']['parents'][0]
-        infos['patchset_number'] = gerrit_infos['currentPatchSet']['number']
-        infos['patchset_revision'] = gerrit_infos['currentPatchSet']['revision']
-        infos['project-name'] = gerrit_infos['project']
-        infos['branch'] = gerrit_infos['branch']
-        infos['id'] = gerrit_infos['id']
-        infos['previous-commit'] = infos['parent']
-        if 'topic' in gerrit_infos:
-            infos['topic'] = gerrit_infos['topic']
-        infos['number'] = gerrit_infos['number']
-        infos['status'] = gerrit_infos['status']
-        infos['url'] = gerrit_infos['url']
-        infos['comments'] = None
-        if 'comments' in gerrit_infos:
-            infos['comments'] = gerrit_infos['comments']
-        infos['commit-message'] = gerrit_infos['commitMessage']
-        if 'neededBy' in gerrit_infos:
-            infos['neededBy'] = gerrit_infos['neededBy']
+        patchset = gerrit_infos.pop('currentPatchSet')
+        gerrit_infos['revision'] = patchset['revision']
+        gerrit_infos['parent'] = patchset['parents'][0]
+        gerrit_infos['patchset_number'] = patchset['number']
+        gerrit_infos['patchset_revision'] = patchset['revision']
 
-        infos['approvals'] = dict()
-        if 'approvals' in gerrit_infos['currentPatchSet']:
+        gerrit_infos['previous_commit'] = gerrit_infos['parent']
+        if 'comments' not in gerrit_infos:
+            gerrit_infos['comments'] = None
+        gerrit_infos['change_branch'] = "%s/changes/%s/%s/%s" % (self.name, gerrit_infos['number'][-2:], gerrit_infos['number'], gerrit_infos['patchset_number'])
+
+        gerrit_infos['approvals'] = dict()
+        if 'approvals' in patchset:
             code_review = -2
             verified = -1
-            for patchset_approval in gerrit_infos['currentPatchSet']['approvals']:
+            for patchset_approval in patchset['approvals']:
                 if patchset_approval['type'] == 'Code-Review':
                     code_review = max(code_review, int(patchset_approval['value']))
                 if patchset_approval['type'] == 'Verified':
@@ -137,57 +127,36 @@ class Gerrit(object):
         else:
             code_review = 0
             verified = 0
-        infos['approvals']['code-review'] = code_review
-        infos['approvals']['verified'] = verified
+        gerrit_infos['approvals']['code-review'] = code_review
+        gerrit_infos['approvals']['verified'] = verified
 
-        return infos
+        return gerrit_infos
 
-    #1def get_changes_data(self, search_values, search_field='change', results_key='id', branch=None, sort_key='number', search_merged=True):
-    def get_changes_data(self, results_key='id', branch=None, sort_key='number', search_merged=True):
-
+    def get_changes(self, search_values=None, search_field='change', results_key='id', sort_key='number', branch=None, search_merged=True, single_result=False, raw_data=False, chain=False):
         #query_string = self.get_query_string(search_field, search_values, branch=branch, search_merged=search_merged)
         query_string = "project:%s AND branch:%s AND status:open" % (self.project_name, branch)
-        #query_string = "project:%s AND branch:master AND status:open" % (self.project_name)
         changes_data = self.query_changes_json(query_string)
 
+        if single_result and len(changes_data) != 1:
+            return None
         changes_data.sort(key=lambda data: data[sort_key])
         log.debugvar('changes_data')
-        data = OrderedDict()
+        results = OrderedDict()
+
+        top_of_chain = None
         for gerrit_data in changes_data:
             norm_data = self.normalize_infos(gerrit_data)
-            data[norm_data[results_key]] = norm_data
+            if raw_data:
+                results[results_key] = norm_data
+            else:
+                change = Change(remote=self, infos=norm_data)
+                if 'neededBy' not in gerrit_data:
+                    top_of_chain = change
+                results[results_key] = change
 
-
-        return data
-
-    def get_change_data(self, search_value, search_field='change', results_key='id', branch=None):
-        change_data = self.get_changes_data(search_value, search_field=search_field, results_key=results_key, branch=branch)
-
-        if len(change_data) == 1:
-            change_data = change_data.popitem()[1]
-        else:
-            return None
-
-        return change_data
-
-    def get_changes(self, search_values, search_field='change', results_key='id', branch=None, search_merged=True):
-        change_data = self.get_changes_data(search_values, search_field=search_field, results_key=results_key, branch=branch, search_merged=search_merged)
-
-        changes = OrderedDict()
-        for key in change_data:
-            change = Change(remote=self)
-            change.load_data(change_data[key])
-            changes[key] = change
-
+        if single_result:
+                changes = results.popitem()[1]
+        if chain and top_of_chain:
+                changes = top_of_chain
         return changes
-
-    def get_change(self, search_values, search_field='change', results_key='id', branch=None):
-        change_data = self.get_changes(search_values, search_field=search_field, results_key=results_key, branch=branch)
-
-        if len(change_data) == 1:
-            change = change_data.popitem()[1]
-        else:
-            return None
-
-        return change
 

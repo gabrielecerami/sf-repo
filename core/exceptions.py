@@ -43,3 +43,5 @@ class RecombinationCanceledError(Exception):
 
 class ConstrainViolationError(Exception):
     pass
+class CherryPickFailed(Exception):
+    pass

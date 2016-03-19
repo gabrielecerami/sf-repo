@@ -4,6 +4,8 @@ from colorlog import log, logsummary
 import sys
 import pprint
 from repotypes.git import LocalRepo
+from datastructures import Backport
+from exceptions import *
 
 class Repos(object):
 
@@ -47,11 +49,11 @@ class Repos(object):
         logsummary.info("initializing and updating local repositories for relevant projects")
         self.projects = projects
 
-    def poll(self):
+    def poll(self, fetch=True):
         for project_name in self.projects:
             try:
                 logsummary.info('Polling original for new changes. Checking status of all changes.')
-                project = Project(project_name, self.projects[project_name], self.base_dir + "/"+ project_name, fetch=True)
+                project = Project(project_name, self.projects[project_name], self.base_dir + "/"+ project_name, fetch=fetch)
                 logsummary.info("Project: %s initialized" % project_name)
                 project.poll_branches()
             except Exception, e:
@@ -78,6 +80,8 @@ class Project(object):
         # Set up remotes
         self.localrepo.set_replica(self.replica_project['location'], self.replica_project['name'], fetch=fetch)
         self.localrepo.set_original(self.original_project['type'], self.original_project['location'], self.original_project['name'], fetch=fetch)
+        self.original_repo = self.localrepo.remotes['original']
+        self.replica_repo = self.localrepo.remotes['replica']
 
         # Set up branches hypermap
         # get branches from original
@@ -88,66 +92,29 @@ class Project(object):
             if 'replica-branch' not in branch:
                 self.branches[branch['name']]['replica-branch'] = branch['name']
 
-    def get_new_changes(self, original_branch):
-        # change OrderedDict
-        replica_branch = self.branches[original_branch]['replica-branch']
-        original_changes = self.localrepo.get_commits('remotes/replica/' + original_branch, 'remotes/original/' + original_branch)
-        if not original_changes:
-            # nothing to do
-            return True
-        blocked_changes = self.localrepo.replica_remote.get_blocked_changes()
-        if blocked_changes:
-            print "there are blocked changes that must be solved before continuing"
-            return False
-        active_changes = self.localrepo.replica_remote.get_changes_data(branch=replica_branch)
-        top_of_chain = None
-        cherrypickfailed = False
-        for uuid, replica_change in active_changes.iteritems():
-            if 'neededBy' not in replica_change:
-                top_of_chain = replica_change
-                active_chain_branch = "replica/changes/%s/%s/%s" % (top_of_chain['number'][-2:], top_of_chain['number'], top_of_chain['patchset_number'])
-                break
-        for new_change in original_changes:
-            replica_change = self.localrepo.find_equivalent_commit(new_change['hash'], active_chain_branch)
-            if not replica_change:
-                # simple case, original change is not present in replica chain
-                # put new change on top.
-                try:
-                    self.localrepo.cherrypick(new_change)
-                except CherryPickfailed:
-                    break
-                self.localrepo.replica_remote.upload()
-            else:
-                suggested_solution = "Commit %s from upstream was already cherry-picked as %s in %s patches branch" % (pick_revision, cmd.output[0], patches_branch)
-                if replica_change is not top_of_chain:
-                # the change is already on the chain, so either is a previously
-                # backported change, or the replica was not updated.
-                # If it's the same change we skip it, if it's different, we recreate it
-                # but we have to respect the order. HOW ?
-                # if the now chanee it's not on top of the chain
-                # it must become the top of the chain
-                    self.localrepo.remove_commits(active_chain_branch [replica_change])
-                    try:
-                        self.localrepo.cherrypick(new_change)
-                    except CherryPickfailed:
-                        break
-                    self.localrepo.replica_remote.upload()
-                else:
-                    diff = self.localrepo.check_diffs(replica_change, new_change)
-                    if diff:
-                        try:
-                            self.localrepo.cherrypick(new_change)
-                        except CherryPickfailed:
-                            break
-                        self.localrepo.replica_remote.upload()
-
-        if cherrypickfailed:
-            comment = failure
-            change_number = self.localrepo.replica_remote.upload("failed_attempts/" % (failed_branch))
-            self.localrepo.replica_remote.comment(change_number, comment)
-
 
     def poll_branches(self):
         for branch in self.branches:
-            self.get_new_changes(branch)
+            replica_branch = self.branches[branch]['replica-branch']
+            new_commits = self.localrepo.get_commits('remotes/replica/' + branch, 'remotes/original/' + branch, no_merges=True)
+            new_changes = self.original_repo.local_track.get_changes([commit['hash'] for commit in new_commits], branch='remotes/original' + branch)
+            if not new_changes:
+                # nothing to do
+                return True
+            blocked_changes = self.localrepo.replica_remote.get_blocked_changes()
+            if blocked_changes:
+                print "there are blocked changes that must be solved before continuing"
+                return False
+            for uuid, change in new_changes.iteritems():
+                change.prepare_backport(self.replica_repo, replica_branch)
+                try:
+                    change.backport.auto_attempt(replica_branch)
+                except CherryPickFailed, e:
+                    log.critical("cherry pick failed")
+                    change.backport.request_human_resolution(e)
+                    raise
+                except UploadError:
+                    log.crit("upload failed")
+                    raise
+
 

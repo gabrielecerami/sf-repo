@@ -3,14 +3,11 @@ import re
 from colorlog import log
 from exceptions import *
 
-yaml.add_representer(folded_unicode, folded_unicode_representer)
-yaml.add_representer(literal_unicode, literal_unicode_representer)
-
 class Change(object):
 
-    def __init__(self, remote=None, infos=None):
+    def __init__(self, remote=None, infos=None, localrepo=None):
         if infos:
-            self.load_infos(infos)
+            self.load_data(infos)
         else:
             self.branch = None
             self.topic = None
@@ -21,37 +18,15 @@ class Change(object):
         self.remote_status = None
         self.code_review = None
         self.verified = None
+        self.localrepo = localrepo
 
     def load_data(self, infos):
-        # self.__dict__.update(infos)
-        self.revision = infos['revision']
-        self.branch = infos['branch']
-        if 'id' in infos:
-            self.uuid = infos['id']
-        elif 'uuid' in infos:
-            self.uuid = infos['uuid']
-        self.parent = infos['parent']
-        self.previous_commit = infos['parent']
-        if 'number' in infos:
-            self.number = infos['number']
-        if 'status' in infos:
-            self.remote_status = infos['status']
-        self.project_name = infos['project-name']
-        if 'topic' in infos:
-            self.topic = infos['topic']
-        if 'patchset_number' in infos:
-            self.patchset_number = infos['patchset_number']
-        if 'patchset_revision' in infos:
-            self.patchset_revision = infos['patchset_revision']
-        if 'url' in infos:
-            self.url = infos['url']
-        if 'commit-message' in infos:
-            self.commit_message = infos['commit-message']
-        if 'comments' in infos:
-            self.comments = infos['comments']
-        if 'approvals' in infos:
-            self.code_review = infos['approvals']['code-review']
-            self.verified = infos['approvals']['verified']
+        for k, v in infos.iteritems():
+            if k == 'id':
+                k = 'uuid'
+            elif k == 'status':
+                k = 'remote_status'
+            setattr(self, k, v)
 
     def submit(self):
         return self.remote.submit_change(self.number, self.patchset_number)
@@ -62,8 +37,8 @@ class Change(object):
     def reject(self):
         return self.remote.reject_change(self.number, self.patchset_number)
 
-    def upload(self, reviewers=None, successremove=True):
-        result_data = self.remote.upload_change(self.branch, self.topic, reviewers=reviewers, successremove=successremove)
+    def upload(self, reviewers=None):
+        result_data = self.remote.upload_change(self.branch, self.branch, self.topic, reviewers=reviewers)
         if result_data:
             self.load_data(result_data)
             #self.number = result_data['number']
@@ -99,6 +74,51 @@ class Change(object):
         data = self.remote.get_change_data(search_value, branch=branch)
         log.debugvar('data')
         self.load_data(data)
+
+    def prepare_backport(self, remote, target_branch):
+        self.backport = Backport(self.revision, target_branch, remote=remote, localrepo=self.localrepo)
+
+
+class Backport(Change):
+
+
+    def __init__(self, revision, target_branch, remote=None, infos=None, localrepo=None):
+        super(Backport, self).__init__(remote=remote, infos=infos, localrepo=localrepo)
+        remote = self.remote
+        log.debugvar('remote')
+        self.pick_revision = revision
+        self.branch = target_branch
+        self.failure_branch = "failed_attempts/%s" % target_branch
+        top_backports_change = self.remote.get_changes(branch=target_branch, chain=True)
+        self.base_revision = self.localrepo.get_revision(top_backports_change.change_branch)
+        self.equivalent_backport = self.localrepo.find_equivalent_commit(self.pick_revision, self.base_revision)
+
+        self.topic = "pick-%s-on-%s" % (self.pick_revision, self.base_revision)
+
+    def auto_attempt(self, target_branch):
+
+        if not self.equivalent_backport:
+            # simple case, original change is not present in replica chain
+            # put new change on top.
+            self.localrepo.cherrypick(self.branch, self.base_revision, self.pick_revision)
+            self.upload()
+        else:
+            log.info("Commit %s from upstream was already cherry-picked as %s in %s patches branch" % (pick_revision, cmd.output[0], patches_branch))
+            if replica_change is not top_of_chain:
+                # the change is already on the chain, so either is a previously
+                # backported change, or the replica was not updated.
+                # If it's the same change we skip it, if it's different, we recreate it
+                # but we have to respect the order. HOW ?
+                # if the now chanee it's not on top of the chain
+                # it must become the top of the chain
+                self.remove(self.branch)
+                self.upload()
+                self.localrepo.cherrypick(self.branch, self.base_revision, self.pick_revision)
+                self.upload()
+            else:
+                diff = self.localrepo.check_diffs(replica_change, new_change)
+                if diff:
+                    self.attempt()
 
     def analyze_comments(self):
         # comments may update metadata too
@@ -144,32 +164,16 @@ class Change(object):
                         self.abandon()
 
 
-class Backport(object):
 
-
-    def __init__(self):
-        self.branch = "recomb-evolution-%s-%s" % (self.evolution_change.branch, self.evolution_change.revision)
-        self.topic = self.evolution_change.uuid
-        self.set_status()
-        if self.backport_change.remote_status is not None:
-            log.warning("recombination already backported in patches branch")
-            self.status = ""
-
-        if 'backport-id' in metadata and metadata['backport-id'] is not None:
-            self.backport_change.load_from_remote(metadata['backport-id'], branch=metadata['sources']['patches']['branch'])
-        else:
-            self.backport_change.commit_message = metadata['sources']['patches']['commit-message']
-            self.backport_change.branch = metadata['sources']['patches']['branch']
-        if 'backport-test-results' in metadata:
-            self.backport_change.post_create_comment = dict()
-            self.backport_change.post_create_comment['message'] = metadata['backport-test-results']['message']
-            self.backport_change.post_create_comment['Code-Review'] = metadata['backport-test-results']['Code-Review']
-            self.backport_change.post_create_comment['Verified'] = metadata['backport-test-results']['Verified']
-            self.backport_change.reviewers = metadata['backport-test-results']['reviewers']
-        self.follow_backport_status()
-
-    def attempt(self):
-        self.underlayer.cherrypick_recombine(self)
+    def request_human_resolution(self, failure):
+        self.branch = self.failure_branch
+        self.upload()
+        comment = failure.args[0]
+        diffs = failure.args[1]
+        for diff_file, diff_output in diffs.iteritems():
+            comment += "\nconflics in file %s\n" % diff_file
+            comment += diff_output
+        self.comment(comment)
 
     def mangle_commit_message(self, commit_message):
         try:
@@ -213,18 +217,6 @@ If you decide to discard this pick instead, please comment to this change with a
             self.comment(message, verified="-1")
         else:
             self.upload()
-
-    def follow_backport_status(self):
-        if self.backport_change.remote_status == "MERGED":
-            try:
-                self.submit()
-            except RecombinationSubmitError:
-                log.error("Recombination not submitted")
-        elif self.backport_change.remote_status == "ABANDONED":
-            try:
-                self.abandon()
-            except RecombinationAbandonedError:
-                log.error("Recombination not abandoned")
 
     def approved(self):
         try:

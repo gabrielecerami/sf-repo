@@ -50,5 +50,5 @@ if __name__=="__main__":
     ## actions
 
     if args.command == 'poll':
-        repos.poll()
+        repos.poll(fetch=args.fetch)
 

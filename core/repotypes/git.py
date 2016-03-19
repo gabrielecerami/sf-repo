@@ -2,16 +2,12 @@ import difflib
 import hashlib
 import sys
 import os
-import tempfile
-import yaml
-import shutil
 import re
-from ..utils import *
 from shellcommand import shell
 from ..datastructures import Change
 from gerrit import Gerrit
 from ..colorlog import log, logsummary
-from ..exceptions import RecombinationCanceledError, RecombinationFailed, RemoteFetchError
+from ..exceptions import CherryPickFailed, RemoteFetchError
 from collections import OrderedDict
 
 
@@ -48,10 +44,10 @@ class Git(object):
                 raise RemoteFetchError
         self.remotes[repo.name] = repo
 
-    def add_gerrit_remote(self, name, location, project_name, fetch=True, fetch_changes=True):
-        repo = Gerrit(name, location, project_name)
+    def add_gerrit_remote(self, localrepo, name, location, project_name, fetch=True, fetch_changes=True):
+        repo = Gerrit(localrepo, name, location, project_name)
         self.addremote(repo, fetch=fetch)
-        repo.local_track = TrackedRepo(name, self.directory, project_name)
+        repo.local_track = TrackedRepo(self, name, self.directory, project_name)
         if fetch_changes:
             shell('git fetch %s +refs/changes/*:refs/remotes/%s/changes/*' % (name, name))
         try:
@@ -59,7 +55,7 @@ class Git(object):
         except OSError:
             shell('scp -p %s:hooks/commit-msg .git/hooks/' % location)
 
-    def add_git_remote(self, name, location, project_name, fetch=True):
+    def add_git_remote(self, localrepo, name, location, project_name, fetch=True):
         repo = RemoteGit(name, location, self.directory, project_name)
         self.addremote(repo, fetch=fetch)
 
@@ -93,7 +89,7 @@ class Git(object):
         shell('git checkout parking')
         if reverse:
             options = '%s --reverse' % options
-        if first_parent:
+        if first_parent and not no_merges:
             options = '%s --first-parent' % options
         if no_merges:
             options = '%s --no-merges' % options
@@ -134,18 +130,17 @@ class LocalRepo(Git):
     def set_original(self, repo_type, location, project_name, fetch=True):
         self.original_type = repo_type
         if repo_type == 'gerrit':
-            self.add_gerrit_remote('original', location, project_name, fetch=fetch, fetch_changes=False)
+            self.add_gerrit_remote(self, 'original', location, project_name, fetch=fetch, fetch_changes=False)
         elif repo_type == 'git':
-            self.add_git_remote('original', location, project_name, fetch=fetch)
+            self.add_git_remote(self, 'original', location, project_name, fetch=fetch)
         else:
             log.critical('unknow original repo type')
             raise UnknownError
         self.original_remote = self.remotes['original']
 
     def set_replica(self, location, project_name, fetch=True):
-        self.add_gerrit_remote('replica',  location, project_name, fetch=fetch, fetch_changes=fetch)
+        self.add_gerrit_remote(self, 'replica',  location, project_name, fetch=fetch, fetch_changes=fetch)
         self.replica_remote = self.remotes['replica']
-        self.recomb_remote = self.remotes['replica']
         self.patches_remote = self.remotes['replica']
 
     def delete_service_branches(self):
@@ -170,56 +165,47 @@ class LocalRepo(Git):
         conflicts_string = conflicts_string + "\n\n"
         return re.sub('(Change-Id: .*\n)', '%s\g<1>' % (conflicts_string),commit_message)
 
-    def cherrypick(self, base_revision, pick_revision, permanent_patches=None):
+    def cherrypick(self, branch, base_revision, pick_revision, permanent_patches=None):
 
-        branch = "cherrypick-%s-%s" % (base_revision, pick_revision)
+        os.chdir(self.directory)
+        cmd = shell(' git rev-parse %s' % (base_revision))
+        base_revision = cmd.output[0]
+
         cmd = shell('git branch --list %s' % branch)
         if cmd.output:
             cmd = shell('git branch -D %s' % branch)
 
-        cmd = shell('git branch -r --list replica/%s' % branch)
-        if cmd.output:
-            cmd = shell('git push replica :%s' % branch)
-
         cmd = shell('git checkout -b %s %s' % (branch, base_revision))
 
-        log.info("Creating remote disposable branch on replica")
-        cmd = shell('git push replica HEAD:%s' % branch)
-
-        cmd = shell('git cherry-pick --no-commit %s' % (pick_revision))
+        cmd = shell('git cherry-pick %s' % (pick_revision))
 
         if cmd.returncode != 0:
-            failure_cause = None
+            diffs = {}
             log.error("Cherry Pick Failed")
-            cmd = shell('git status --porcelain')
             status = ''
-            suggested_solution = ''
-            try:
-                if recombination.backport_change.exist_different:
-                    pass
-            except AttributeError:
-                pass
-
-            if failure_cause == "conflict":
-                conflicts = cmd.output
-                recombination.backport_change.commit_message = self.add_conflicts_string(conflicts, recombination.backport_change.commit_message)
-                status = '\n    '.join([''] + conflicts)
-                # TODO: add diff3 conflict blocks to output to status
-                for filestatus in conflicts:
-                    filename = filestatus[2:] # re.sub('^[A-Z]*\ ', '')
-                    with open(filename) as conflict_file:
-                        filecontent = conflict_file.read()
-                    for lineno, line in enum(filecontent.split('\n')):
-                        rs = re.search('^<<<<<<', line)
-                        if rs is not None:
-                            block_start = line
-                        rs = re.search('^>>>>>>', line)
-                        if rs is not None:
-                            block_end = line
-                    block = '\n'.join(filecontent.split('\n')[block_start:block_end])
-                diffs[filename] = block
+            cmd = shell('git status --porcelain')
+            conflicts = cmd.output
+            status = '\n    '.join([''] + conflicts)
+            # TODO: add diff3 conflict blocks to output to status
+            for filestatus in conflicts:
+                filename = re.sub("^[A-Z]{1,2}\s+", "", filestatus) # re.sub('^[A-Z]*\ ', '')
+                block_start = None
+                block_end = None
+                with open(filename) as conflict_file:
+                    filecontent = conflict_file.read()
+                for lineno, line in enumerate(filecontent.split('\n')):
+                    rs = re.search('^<<<<<<<', line)
+                    if rs is not None:
+                        block_start = lineno
+                    rs = re.search('^>>>>>>>', line)
+                    if rs is not None:
+                        block_end = lineno
+                    if block_start is not None and block_end is not None:
+                        block = '\n'.join(filecontent.split('\n')[block_start:block_end+1])
+                        diffs[filename] = block
             cmd = shell('git cherry-pick --abort')
             raise CherryPickFailed(status, diffs)
+        cmd = shell('git checkout parking')
 
     def remove_commits(self, branch, removed_commits, remote=''):
         shell('git branch --track %s%s %s' (remote, branch, branch))
@@ -235,7 +221,6 @@ class LocalRepo(Git):
             shell('git push -f %s HEAD:%s' % (remote, branch))
             log.info('Pushed modified branch on remote')
         shell('git checkout parking')
-
 
     def something(self):
         # Set real commit as revision
@@ -263,10 +248,11 @@ class LocalRepo(Git):
 
 class TrackedRepo(Git):
 
-    def __init__(self, name, directory, project_name):
+    def __init__(self, localrepo, name, directory, project_name):
         self.name = name
         self.directory = directory
         self.project_name = project_name
+        self.localrepo = localrepo
 
     def get_changes_data(self, search_values, search_field='commit', results_key='revision', branch=None):
         if type(search_values) is str or type(search_values) is unicode:
@@ -276,7 +262,7 @@ class TrackedRepo(Git):
             log.error('Tracked repo search does not support search by %s' % search_field)
             return None
 
-        changes_data = dict()
+        changes_data = OrderedDict()
         os.chdir(self.directory)
         for revision in search_values:
             infos = {}
@@ -308,7 +294,7 @@ class TrackedRepo(Git):
 
         changes = OrderedDict()
         for key in changes_data:
-            change = Change(remote=self)
+            change = Change(remote=self, localrepo=self.localrepo)
             change.load_data(changes_data[key])
             changes[key] = change
         return changes
@@ -325,7 +311,7 @@ class TrackedRepo(Git):
 
 class RemoteGit(TrackedRepo):
 
-    def __init__(self, name, location, directory, project_name):
-        super(RemoteGit, self).__init__(name, directory, project_name)
+    def __init__(self, localrepo, name, location, directory, project_name):
+        super(RemoteGit, self).__init__(localrepo, name, directory, project_name)
         self.url = "git@%s:%s" % (location, project_name)
 
