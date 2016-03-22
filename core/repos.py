@@ -67,6 +67,7 @@ class Project(object):
         self.project_name = project_name
         self.commits = dict()
         self.branches = dict()
+        self.base_tags = dict()
 
         log.info('Current project:\n' + pprint.pformat(project_info))
         self.original_project = project_info['original']
@@ -91,6 +92,10 @@ class Project(object):
             self.branches[branch['name']] = branch
             if 'replica-branch' not in branch:
                 self.branches[branch['name']]['replica-branch'] = branch['name']
+            if 'base-tag' in branch:
+                self.base_tags[branch['name']] = branch['base-tag']
+            else:
+                self.base_tags[branch['name']] = self.localrepo.find_latest_tag("replica/" + branch['name'])
 
 
     def poll_branches(self):
@@ -100,12 +105,21 @@ class Project(object):
             new_changes = self.original_repo.local_track.get_changes([commit['hash'] for commit in new_commits], branch='remotes/original' + branch)
             if not new_changes:
                 # nothing to do
+                log.info("No new changes")
                 return True
             blocked_changes = self.localrepo.replica_remote.get_blocked_changes()
             if blocked_changes:
                 print "there are blocked changes that must be solved before continuing"
                 return False
+            # TODO: backport analysis
+            # how many backports, how many commits ? in whic order ?
+            # how many already exist ?
+            # compare_changes list with backports list
+            # what should be merged, what should be skipped ?
+            # how do we advance local repo ?
             for uuid, change in new_changes.iteritems():
+                # backport chain might have been modified, force fetch
+                self.localrepo.fetch_changes('replica')
                 change.prepare_backport(self.replica_repo, replica_branch)
                 try:
                     change.backport.auto_attempt(replica_branch)

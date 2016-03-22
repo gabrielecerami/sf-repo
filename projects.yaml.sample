@@ -2,16 +2,16 @@
 defaults:
     replica-location: rpmfactory
 projects:
-    ironic:
+    nova:
         original:
-            location: gerrit-openstack-rdoci
-            name: openstack/ironic
+            location: gerrit-openstack
+            name: openstack/nova
             type: gerrit
             watch-branches:
-                - name: stable/kilo
+                - name: stable/liberty
                   last-tag: 5.0.0
-                  replica-branch:
+                  replica-branch: liberty-patches
             watch-method: events
         replica:
             location: rpmfactory
-            name: ironic
+            name: testproject

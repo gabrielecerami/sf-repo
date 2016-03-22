@@ -63,7 +63,7 @@ class Gerrit(object):
         #        log.debug("trying alternative upload method")
         #        shell("git push %s HEAD:refs/drafts/%s/%s" % (self.name, branch, topic))
         #        break
-        #shell(command)
+        shell(command)
         log.debug(command)
         cmd = shell('git branch -D %s' % source_branch)
         cmd = shell('ssh %s gerrit query --current-patch-set --format json "topic:%s AND status:open"' % (self.host, topic))
@@ -144,6 +144,7 @@ class Gerrit(object):
         results = OrderedDict()
 
         top_of_chain = None
+        changes = None
         for gerrit_data in changes_data:
             norm_data = self.normalize_infos(gerrit_data)
             if raw_data:

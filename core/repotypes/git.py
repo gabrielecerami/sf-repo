@@ -1,4 +1,3 @@
-import difflib
 import hashlib
 import sys
 import os
@@ -44,12 +43,15 @@ class Git(object):
                 raise RemoteFetchError
         self.remotes[repo.name] = repo
 
+    def fetch_changes(self, name):
+        shell('git fetch %s +refs/changes/*:refs/remotes/%s/changes/*' % (name, name))
+
     def add_gerrit_remote(self, localrepo, name, location, project_name, fetch=True, fetch_changes=True):
         repo = Gerrit(localrepo, name, location, project_name)
         self.addremote(repo, fetch=fetch)
         repo.local_track = TrackedRepo(self, name, self.directory, project_name)
         if fetch_changes:
-            shell('git fetch %s +refs/changes/*:refs/remotes/%s/changes/*' % (name, name))
+            self.fetch_changes(name)
         try:
             os.stat(".git/hooks/commit-msg")
         except OSError:
@@ -109,6 +111,25 @@ class Git(object):
 
         return commit_list
 
+    def commits_differ(self, revision_a, revision_b):
+        cmd =  shell('git show --pretty=format:"%%b" %s' % revision_a)
+        body_a = '\n'.join(cmd.output)
+        cmd =  shell('git show --pretty=format:"%%b" %s' % revision_b)
+        body_b = '\n'.join(cmd.output)
+        hash_a = hashlib.sha1(body_a).hexdigest()
+        hash_b = hashlib.sha1(body_b).hexdigest()
+        return hash_a != hash_b
+
+    def find_latest_tag(self,branch):
+        os.chdir(self.directory)
+        cmd = shell('git rev-list %s' % branch, show_stdout=False)
+        for revision in cmd.output:
+            cmd = shell('git tag --points-at %s' % revision)
+            if cmd.output:
+                latest_tag = cmd.output[0]
+                break
+        return latest_tag
+
 class LocalRepo(Git):
 
     def __init__(self, project_name, directory):
@@ -155,7 +176,7 @@ class LocalRepo(Git):
         date = cmd.output[0]
         cmd = shell('git log --pretty=raw --author="%s" %s| grep -B 3 "%s" | grep commit\  | sed -e "s/commit //g"' % (author, branch, date))
         if cmd.output:
-            return cmd.output
+            return cmd.output[0]
         else:
             return None
 
@@ -221,30 +242,6 @@ class LocalRepo(Git):
             shell('git push -f %s HEAD:%s' % (remote, branch))
             log.info('Pushed modified branch on remote')
         shell('git checkout parking')
-
-    def something(self):
-        # Set real commit as revision
-        original_changes[change_id].revision = original_ids[change_id]
-        if replication_strategy == "lock-and-backports":
-            lock_revision = self.get_revision(replica_lock)
-            cmd = shell('git show -s --pretty=format:"%%an <%%ae>" %s' % original_ids[change_id])
-            author = cmd.output[0]
-            cmd = shell('git show -s --pretty=format:"%%at" %s' % original_ids[change_id])
-            date = cmd.output[0]
-            cmd = shell('git log --pretty=raw --author="%s" %s..%s | grep -B 3 "%s" | grep commit\  | sed -e "s/commit //g"' % (author, lock_revision, diversity_revision, date))
-            if cmd.output:
-                backport_change = self.patches_remote.get_change(cmd.output[0], search_field='commit')
-                # TODO: evaluate body diff.
-                # if body_diff:
-                #     log.warning ('backport is present but patch differs')
-                #     backport_change.exist_different = True
-            else:
-                backport_change = Change(remote=self.patches_remote)
-            # backport_change.branch = self.underlayer.branch_maps['patches']['original'][self.evolution_change.branch]
-            recombination.initialize(self.recomb_remote, evolution_change=original_changes[change_id], diversity_change=diversity_change, backport_change=backport_change)
-        elif replication_strategy == "change-by-change":
-            recombination.initialize(self.recomb_remote, original_change=original_changes[change_id], diversity_change=diversity_change)
-
 
 class TrackedRepo(Git):
 
