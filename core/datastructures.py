@@ -89,7 +89,8 @@ class Backport(Change):
         self.pick_revision = revision
         self.branch = target_branch
         self.failure_branch = "failed_attempts/%s" % target_branch
-        top_backports_change = self.remote.get_changes(branch=target_branch, chain=True)
+        backports_change = self.remote.get_changes(branch=target_branch, chain=True)
+        tbc_id, top_backports_change = backports_change.popitem(last=True)
         if top_backports_change != None:
             self.base_ref = top_backports_change.change_branch
         else:

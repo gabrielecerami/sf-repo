@@ -155,7 +155,7 @@ class LocalRepo(Git):
         elif repo_type == 'git':
             self.add_git_remote(self, 'original', location, project_name, fetch=fetch)
         else:
-            log.critical('unknow original repo type')
+            log.critical('unknown original repo type')
             raise UnknownError
         self.original_remote = self.remotes['original']
 

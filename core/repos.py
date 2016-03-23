@@ -117,12 +117,17 @@ class Project(object):
             # compare_changes list with backports list
             # what should be merged, what should be skipped ?
             # how do we advance local repo ?
+            # Analize backports to do, do them all at once,
+            # stop at first troublesome cherrypick, but merge the rest
+            # put all local-only backports on top
+            # XXX: USE OLD MERGE TO COMMIT METHOD
             for uuid, change in new_changes.iteritems():
                 # backport chain might have been modified, force fetch
                 self.localrepo.fetch_changes('replica')
                 change.prepare_backport(self.replica_repo, replica_branch)
                 try:
                     change.backport.auto_attempt(replica_branch)
+                    self.localrepo.sync_replica(branch, change.backport.revision)
                 except CherryPickFailed, e:
                     log.critical("cherry pick failed")
                     change.backport.request_human_resolution(e)

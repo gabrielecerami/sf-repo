@@ -140,24 +140,33 @@ class Gerrit(object):
         if single_result and len(changes_data) != 1:
             return None
         changes_data.sort(key=lambda data: data[sort_key])
-        log.debugvar('changes_data')
         results = OrderedDict()
+        tmp_chain = list()
+        results_chain = OrderedDict()
 
-        top_of_chain = None
-        changes = None
         for gerrit_data in changes_data:
             norm_data = self.normalize_infos(gerrit_data)
             if raw_data:
-                results[results_key] = norm_data
+                results[gerrit_data[results_key]] = norm_data
             else:
                 change = Change(remote=self, infos=norm_data)
-                if 'neededBy' not in gerrit_data:
+                results[gerrit_data[results_key]] = change
+                if 'neededBy' not in norm_data:
                     top_of_chain = change
-                results[results_key] = change
 
         if single_result:
-                changes = results.popitem()[1]
-        if chain and top_of_chain:
-                changes = top_of_chain
-        return changes
+           results = results.popitem()[1]
+        if chain and top_of_chain and hasattr(top_of_chain, 'dependsOn'):
+            tmp_chain.insert(0, top_of_chain)
+            next_change = top_of_chain
+            while hasattr(next_change, 'dependsOn'):
+                tmp_chain.insert(0, next_change)
+                next_change_id = next_change.dependsOn[0]['id']
+                next_change = results[next_change_id]
 
+            for change in tmp_chain:
+                results_chain[change.uuid] = change
+
+            return results_chain
+
+        return results
