@@ -100,7 +100,7 @@ class Project(object):
     def poll_branches(self):
         for branch in self.branches:
             replica_branch = self.branches[branch]['replica-branch']
-            self.localrepo.create_base_pick_branch(replica_branch, self.base_tags[branch])
+            base_ref = self.base_tags[branch]
             commits_fromtag = self.localrepo.get_commits(self.base_tags[branch], 'remotes/original/' + branch)
             changes = self.original_repo.local_track.get_changes([commit['hash'] for commit in commits_fromtag], branch='remotes/original' + branch)
             blocked_changes = self.localrepo.replica_remote.get_blocked_changes()
@@ -133,6 +133,7 @@ class Project(object):
                 if not upload_triggered:
                     equivalent_backport = self.localrepo.find_equivalent_commit(change.backport.pick_revision, chain_revision)
                     if equivalent_backport:
+                        base_ref = equivalent_backport
                         log.info("Commit %s from upstream was already cherry-picked as %s in %s branch" % (change.backport.pick_revision, equivalent_backport, branch))
                         differ = self.localrepo.commits_differ(equivalent_backport, change.backport.pick_revision)
                         # commit already backported
@@ -153,17 +154,21 @@ class Project(object):
                         if backport_index != index:
                             upload_triggered = True
                             log.info("UPLOAD TRIGGERED")
+                            self.localrepo.create_base_pick_branch(replica_branch, base_ref)
                     else:
                         log.info('commit has not been backported yet')
                         upload_triggered = True
                         log.info("UPLOAD TRIGGERED")
-                try:
-                    change.backport.auto_attempt(replica_branch)
-                except CherryPickFailed, e:
-                    log.critical("cherry pick failed")
-                    change.backport.request_human_resolution(e)
-                    failure_branch = "failed_attempts/%s" % target_branch
-                    break
+                        self.localrepo.create_base_pick_branch(replica_branch, base_ref)
+
+                if upload_triggered:
+                    try:
+                        change.backport.auto_attempt(replica_branch)
+                    except CherryPickFailed, e:
+                        log.critical("cherry pick failed")
+                        change.backport.request_human_resolution(e)
+                        failure_branch = "failed_attempts/%s" % target_branch
+                        break
 
             if upload_triggered:
                 latest_commit = self.localrepo.get_revision(replica_branch)
