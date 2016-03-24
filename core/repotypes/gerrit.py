@@ -143,6 +143,7 @@ class Gerrit(object):
         results = OrderedDict()
         tmp_chain = list()
         results_chain = OrderedDict()
+        top_of_chain = None
 
         for gerrit_data in changes_data:
             norm_data = self.normalize_infos(gerrit_data)
@@ -156,16 +157,21 @@ class Gerrit(object):
 
         if single_result:
            results = results.popitem()[1]
-        if chain and top_of_chain and hasattr(top_of_chain, 'dependsOn'):
-            tmp_chain.insert(0, top_of_chain)
-            next_change = top_of_chain
-            while hasattr(next_change, 'dependsOn'):
-                tmp_chain.insert(0, next_change)
-                next_change_id = next_change.dependsOn[0]['id']
-                next_change = results[next_change_id]
+        if chain and top_of_chain:
+            change_id = top_of_chain.revision
+            while change_id in results:
+                change = results[change_id]
+                tmp_chain.insert(0, change)
+                if hasattr(change, 'dependsOn'):
+                    tmp_chain.insert(0, change)
+                    change_id = change.dependsOn[0][results_key]
+                else:
+                    change_id = None
+
+
 
             for change in tmp_chain:
-                results_chain[change.uuid] = change
+                results_chain[change.revision] = change
 
             return results_chain
 

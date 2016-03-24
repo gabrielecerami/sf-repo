@@ -186,10 +186,11 @@ class LocalRepo(Git):
         conflicts_string = conflicts_string + "\n\n"
         return re.sub('(Change-Id: .*\n)', '%s\g<1>' % (conflicts_string),commit_message)
 
-    def cherrypick(self, branch, base_revision, pick_revision, permanent_patches=None):
 
+    def create_base_pick_branch(self, branch, base_ref):
         os.chdir(self.directory)
-        cmd = shell(' git rev-parse %s' % (base_revision))
+
+        cmd = shell(' git rev-parse %s' % (base_ref))
         base_revision = cmd.output[0]
 
         cmd = shell('git branch --list %s' % branch)
@@ -198,6 +199,11 @@ class LocalRepo(Git):
 
         cmd = shell('git checkout -b %s %s' % (branch, base_revision))
 
+
+    def cherrypick(self, branch, pick_revision, permanent_patches=None):
+
+        os.chdir(self.directory)
+        cmd = shell('git checkout %s' % (branch))
         cmd = shell('git cherry-pick %s' % (pick_revision))
 
         if cmd.returncode != 0:
@@ -251,7 +257,7 @@ class TrackedRepo(Git):
         self.project_name = project_name
         self.localrepo = localrepo
 
-    def get_changes_data(self, search_values, search_field='commit', results_key='revision', branch=None):
+    def get_changes(self, search_values, search_field='commit', results_key='revision', branch=None, raw_data=False, single_result=False):
         if type(search_values) is str or type(search_values) is unicode:
             search_values = [search_values]
 
@@ -264,7 +270,8 @@ class TrackedRepo(Git):
         for revision in search_values:
             infos = {}
             cmd = shell('git show -s --pretty=format:"%%H %%P" %s' % (revision))
-            infos['id'], infos['parent'] = cmd.output[0].split(' ')[0:2]
+            infos['id'] = cmd.output[0].split(' ')[0]
+            infos['parents'] = cmd.output[0].split(' ')[1:]
             infos['revision'] = infos['id']
             if not branch:
                 log.error("for git repositories you must specify a branch")
@@ -274,37 +281,27 @@ class TrackedRepo(Git):
             infos['project-name'] = self.project_name
             changes_data[infos[results_key]] = infos
 
-        return changes_data
-
-    def get_change_data(self, search_value, search_field='commit', results_key='revision', branch=None):
-        change_data = self.get_changes_data(search_value, search_field=search_field, results_key=results_key, branch=branch)
-
-        if len(change_data) == 1:
-            change_data = change_data.popitem()[1]
-        else:
-            return None
-
-        return change_data
-
-    def get_changes(self, search_values, search_field='commit', results_key='revision', branch=None, search_merged=True):
-        changes_data = self.get_changes_data(search_values, search_field=search_field, results_key=results_key, branch=branch)
+        if raw_data and not single_result:
+            return changes_data
+        if raw_data and single_result:
+            if len(changes_data) == 1:
+                return changes_data.popitem()[1]
+            else:
+                return None
 
         changes = OrderedDict()
         for key in changes_data:
             change = Change(remote=self, localrepo=self.localrepo)
             change.load_data(changes_data[key])
             changes[key] = change
+
+        if single_result:
+            if len(changes_data) == 1:
+                return changes.popitem()[1]
+            else:
+                return None
+
         return changes
-
-    def get_change(self, search_values, search_field='commit', results_key='revision', branch=None):
-        change_data = self.get_changes(search_values, search_field=search_field, results_key=results_key, branch=branch)
-
-        if len(change_data) == 1:
-            change = change_data.popitem()[1]
-        else:
-            return None
-
-        return change
 
 class RemoteGit(TrackedRepo):
 

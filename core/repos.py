@@ -4,7 +4,6 @@ from colorlog import log, logsummary
 import sys
 import pprint
 from repotypes.git import LocalRepo
-from datastructures import Backport
 from exceptions import *
 
 class Repos(object):
@@ -101,12 +100,9 @@ class Project(object):
     def poll_branches(self):
         for branch in self.branches:
             replica_branch = self.branches[branch]['replica-branch']
-            new_commits = self.localrepo.get_commits('remotes/replica/' + branch, 'remotes/original/' + branch, no_merges=True)
-            new_changes = self.original_repo.local_track.get_changes([commit['hash'] for commit in new_commits], branch='remotes/original' + branch)
-            if not new_changes:
-                # nothing to do
-                log.info("No new changes")
-                return True
+            self.localrepo.create_base_pick_branch(replica_branch, self.base_tags[branch])
+            commits_fromtag = self.localrepo.get_commits(self.base_tags[branch], 'remotes/original/' + branch)
+            changes = self.original_repo.local_track.get_changes([commit['hash'] for commit in commits_fromtag], branch='remotes/original' + branch)
             blocked_changes = self.localrepo.replica_remote.get_blocked_changes()
             if blocked_changes:
                 print "there are blocked changes that must be solved before continuing"
@@ -121,19 +117,59 @@ class Project(object):
             # stop at first troublesome cherrypick, but merge the rest
             # put all local-only backports on top
             # XXX: USE OLD MERGE TO COMMIT METHOD
-            for uuid, change in new_changes.iteritems():
-                # backport chain might have been modified, force fetch
-                self.localrepo.fetch_changes('replica')
+            backports = self.replica_repo.get_changes(branch=replica_branch, chain=True, results_key='revision')
+            backports_list = list(backports)
+            log.debugvar('backports')
+            if backports:
+                tb_id, top_backport = backports.popitem(last=True)
+                chain_ref = top_backport.change_branch
+            else:
+                chain_ref = self.base_tags[branch]
+            chain_revision = self.localrepo.get_revision(chain_ref)
+            upload_triggered = False
+            for index, item in enumerate(changes.iteritems()):
+                uuid, change = item
                 change.prepare_backport(self.replica_repo, replica_branch)
+                if not upload_triggered:
+                    equivalent_backport = self.localrepo.find_equivalent_commit(change.backport.pick_revision, chain_revision)
+                    if equivalent_backport:
+                        log.info("Commit %s from upstream was already cherry-picked as %s in %s branch" % (change.backport.pick_revision, equivalent_backport, branch))
+                        differ = self.localrepo.commits_differ(equivalent_backport, change.backport.pick_revision)
+                        # commit already backported
+                        backport_index = backports_list.index(equivalent_backport)
+                        log.debugvar('backport_index')
+                        log.debugvar('index')
+                        if backport_index == index:
+                            log.info('backported commit is in the right order')
+                        else:
+                            log.info('backported commit is in different order')
+                        if not differ:
+                            log.info('backported commit is the same')
+                        else:
+                            log.info('backported commit content has changed')
+                        # if backport_index != index or differ:
+                        # different content is actually very difficult to control
+                        # maybe it's better to remove diffcontrol lines from the content
+                        if backport_index != index:
+                            upload_triggered = True
+                            log.info("UPLOAD TRIGGERED")
+                    else:
+                        log.info('commit has not been backported yet')
+                        upload_triggered = True
+                        log.info("UPLOAD TRIGGERED")
                 try:
                     change.backport.auto_attempt(replica_branch)
-                    self.localrepo.sync_replica(branch, change.backport.revision)
                 except CherryPickFailed, e:
                     log.critical("cherry pick failed")
                     change.backport.request_human_resolution(e)
-                    raise
+                    failure_branch = "failed_attempts/%s" % target_branch
+                    break
+
+            if upload_triggered:
+                latest_commit = self.localrepo.get_revision(replica_branch)
+                topic = "update-to-commit-%s" % latest_commit
+                try:
+                    self.replica_repo.upload_change(replica_branch, replica_branch, topic)
                 except UploadError:
                     log.crit("upload failed")
                     raise
-
-

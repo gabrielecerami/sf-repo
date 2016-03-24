@@ -76,7 +76,11 @@ class Change(object):
         self.load_data(data)
 
     def prepare_backport(self, remote, target_branch):
-        self.backport = Backport(self.revision, target_branch, remote=remote, localrepo=self.localrepo)
+        if len(self.parents) > 1:
+            backport_revision = self.parents[1]
+        else:
+            backport_revision = self.revision
+        self.backport = Backport(backport_revision, target_branch, remote=remote, localrepo=self.localrepo)
 
 
 class Backport(Change):
@@ -85,45 +89,12 @@ class Backport(Change):
     def __init__(self, revision, target_branch, remote=None, infos=None, localrepo=None):
         super(Backport, self).__init__(remote=remote, infos=infos, localrepo=localrepo)
         remote = self.remote
-        log.debugvar('remote')
         self.pick_revision = revision
         self.branch = target_branch
-        self.failure_branch = "failed_attempts/%s" % target_branch
-        backports_change = self.remote.get_changes(branch=target_branch, chain=True)
-        tbc_id, top_backports_change = backports_change.popitem(last=True)
-        if top_backports_change != None:
-            self.base_ref = top_backports_change.change_branch
-        else:
-            self.base_ref = self.remote.name + "/" + target_branch
-        self.base_revision = self.localrepo.get_revision(self.base_ref)
-        self.equivalent_backport = self.localrepo.find_equivalent_commit(self.pick_revision, self.base_revision)
 
-        self.topic = "pick-%s-on-%s" % (self.pick_revision, self.base_revision)
 
     def auto_attempt(self, target_branch):
-
-        if not self.equivalent_backport:
-            # simple case, original change is not present in replica chain
-            # put new change on top.
-            self.localrepo.cherrypick(self.branch, self.base_revision, self.pick_revision)
-            self.upload()
-        else:
-            # the change is already on the chain, so either is a previously
-            # backported change, or the replica was not updated.
-            # If it's the same change we skip it, if it's different, we recreate it
-            # but we have to respect the order.
-            log.info("Commit %s from upstream was already cherry-picked as %s in %s patches branch" % (self.pick_revision, self.equivalent_backport, self.branch))
-            # check if patch content are the same
-            differ = self.localrepo.commits_differ(self.equivalent_backport, self.pick_revision)
-            if self.equivalent_backport != self.base_revision or differ:
-                # if the now chanee it's not on top of the chain
-                # it must become the top of the chain
-                self.remove(self.branch)
-                self.upload()
-                self.localrepo.cherrypick(self.branch, self.base_revision, self.pick_revision)
-                self.upload()
-            else:
-                log.info("Commit exists, is on top and is the same, nothing to do")
+        self.localrepo.cherrypick(self.branch, self.pick_revision)
 
     def analyze_comments(self):
         # comments may update metadata too
@@ -167,8 +138,6 @@ class Backport(Change):
                         self.comment(comment, code_review="-2")
                         raise ValueError
                         self.abandon()
-
-
 
     def request_human_resolution(self, failure):
         self.branch = self.failure_branch
