@@ -100,9 +100,11 @@ class Project(object):
     def poll_branches(self):
         for branch in self.branches:
             replica_branch = self.branches[branch]['replica-branch']
+            original_branch = 'remotes/original/' + branch
             base_ref = self.base_tags[branch]
-            commits_fromtag = self.localrepo.get_commits(self.base_tags[branch], 'remotes/original/' + branch)
-            changes = self.original_repo.local_track.get_changes([commit['hash'] for commit in commits_fromtag], branch='remotes/original' + branch)
+            self.localrepo.create_base_pick_branch(replica_branch, base_ref)
+            commits_fromtag = self.localrepo.get_commits(self.base_tags[branch], original_branch)
+            original_changes = self.original_repo.local_track.get_changes([commit['hash'] for commit in commits_fromtag], branch='remotes/original' + branch)
             blocked_changes = self.localrepo.replica_remote.get_blocked_changes()
             if blocked_changes:
                 print "there are blocked changes that must be solved before continuing"
@@ -119,6 +121,7 @@ class Project(object):
             # XXX: USE OLD MERGE TO COMMIT METHOD
             backports = self.replica_repo.get_changes(branch=replica_branch, chain=True, results_key='revision')
             backports_list = list(backports)
+            preventive_backports_list = set(backports)
             log.debugvar('backports')
             if backports:
                 tb_id, top_backport = backports.popitem(last=True)
@@ -127,7 +130,11 @@ class Project(object):
                 chain_ref = self.base_tags[branch]
             chain_revision = self.localrepo.get_revision(chain_ref)
             upload_triggered = False
-            for index, item in enumerate(changes.iteritems()):
+
+            # TODO: preventive backport, protected backports
+            if protected_backports:
+                reapply
+            for index, item in enumerate(original_changes.iteritems()):
                 uuid, change = item
                 change.prepare_backport(self.replica_repo, replica_branch)
                 if not upload_triggered:
@@ -138,6 +145,7 @@ class Project(object):
                         differ = self.localrepo.commits_differ(equivalent_backport, change.backport.pick_revision)
                         # commit already backported
                         backport_index = backports_list.index(equivalent_backport)
+                        preventive_packports_list.remove(equivalent_backports)
                         log.debugvar('backport_index')
                         log.debugvar('index')
                         if backport_index == index:
@@ -169,6 +177,20 @@ class Project(object):
                         change.backport.request_human_resolution(e)
                         failure_branch = "failed_attempts/%s" % target_branch
                         break
+
+            for commit in preventive_backports:
+                equivalent_change = self.original_repo.find_equivalent_change(commit)
+                equivalent_change.prepare_backport(self.replica_repo, replica_branch)
+                differ = self.localrepo.commits_differ(equivalent_change.revision, commit)
+                if differ:
+                    try:
+                        equivalent_change.backport.auto_attempt(replica_branch)
+                    except CherryPickFailed, e:
+                        log.critical("cherry pick failed")
+                        equivalent_change.backport.request_human_resolution(e)
+                        failure_branch = "failed_attempts/%s" % target_branch
+                        break
+
 
             if upload_triggered:
                 latest_commit = self.localrepo.get_revision(replica_branch)

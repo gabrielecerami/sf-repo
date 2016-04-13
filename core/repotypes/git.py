@@ -200,6 +200,7 @@ class LocalRepo(Git):
         cmd = shell('git checkout -b %s %s' % (branch, base_revision))
 
 
+
     def cherrypick(self, branch, pick_revision, permanent_patches=None):
 
         os.chdir(self.directory)
