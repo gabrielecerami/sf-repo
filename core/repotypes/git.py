@@ -187,19 +187,19 @@ class LocalRepo(Git):
         return re.sub('(Change-Id: .*\n)', '%s\g<1>' % (conflicts_string),commit_message)
 
 
-    def create_base_pick_branch(self, branch, base_ref):
+    def create_branch(self, branch_name, base_ref):
         os.chdir(self.directory)
 
         cmd = shell(' git rev-parse %s' % (base_ref))
         base_revision = cmd.output[0]
 
-        cmd = shell('git branch --list %s' % branch)
+        cmd = shell('git branch --list %s' % branch_name)
         if cmd.output:
-            cmd = shell('git branch -D %s' % branch)
+            cmd = shell('git branch -D %s' % branch_name)
 
-        cmd = shell('git checkout -b %s %s' % (branch, base_revision))
+        cmd = shell('git checkout -b %s %s' % (branch_name, base_revision))
 
-
+        return branch_name
 
     def cherrypick(self, branch, pick_revision, permanent_patches=None):
 
